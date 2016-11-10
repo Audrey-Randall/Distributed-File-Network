@@ -14,6 +14,14 @@
 #include <memory.h>
 #include <errno.h>
 
+//C++
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <sstream>
+//using namespace std;
+
 #define BUFFER_SIZE 1024
 
 
@@ -22,19 +30,20 @@
     http://stackoverflow.com/questions/27014955/socket-connect-vs-bind
     Linux man pages
 */
-vector<struct sockaddr_in*> remoteSocks;
+std::vector<struct sockaddr_in*> remoteSocks;
 
 int testSend(int clientFD) {
     for(int i = 0; i < 4; i++) {
-        string tester = "Testing " + i;
+        std::string tester = "Testing " + i;
         //Connect client socket to remote port. This means client sends to that port, but it listens on whichever one the kernel assigns it.
-        if(connect(clientFD, (struct sockaddr *)remoteSocks[i], sizeof(*(remoteSocks[i]))) < 0) {
+        struct sockaddr_in * curSockAddr = remoteSocks[i];
+        if(connect(clientFD, (struct sockaddr *)curSockAddr, sizeof(*curSockAddr)) < 0) {
            printf("connection failed error\n");
            return 1;
         }
-        if(sendto(clientFD, tester.c_str(), tester.length(), 0, (struct sockaddr)remoteSocks[i], sizeof(*(remoteSocks[i])))) < 0) {
+        if((sendto(clientFD, tester.c_str(), tester.length(), 0, (struct sockaddr*)remoteSocks[i], sizeof(*(remoteSocks[i])))) < 0) {
             printf("Error in sendto on socket %d", i);
-            perror();
+            perror("");
         }
     }
     return 0;
@@ -62,12 +71,10 @@ int main(int argc, char* argv[]){
     int clientFD;
     int n = 0;
     struct sockaddr_in servsock1, servsock2, servsock3, servsock4, clientsock;
-    int remoteSockLen = sizeof(remoteSock);
     char buffer[BUFFER_SIZE];
 
     //Initialize everything
     memset(buffer, 0, sizeof(buffer));
-    memset(&remoteSock, 0, sizeof(remoteSock));
 
     //Init client socket
     if((clientFD = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -108,26 +115,38 @@ int main(int argc, char* argv[]){
 
     while(1) {
         printf("Please select from the following options: \n\tLIST\n\tGET\n\tPUT\n");
-        fgets(fullCommand, 103, stdin);
-        sscanf(fullCommand, "%s %s", command, filename);
-        if(!strcmp(command, "LIST")) {
+        //fgets(fullCommand, 103, stdin);
+        //sscanf(fullCommand, "%s %s", command, filename);
+        std::string in;
+        std::string command;
+        int idx = 0;
+        std::vector<std::string> args;
+        while(getline(std::cin, in)) {
+            if(!idx) command = in;
+            else {
+                args.push_back(in);
+            }
+        }
+        if(command == "LIST") {
             doList();
-        } else if (strcmp(command, "GET")) {
+        } else if (command == "GET") {
             doGet();
-        } else if(strcmp(command, "PUT")) {
+        } else if(command == "PUT") {
             doPut();
-        } else {
-            printf("Unknown command. \n");
+        } else if (command == "TEST") {
+            testSend(clientFD);
+        }else {
+            std::cout<<"Unknown command "<<command<<std::endl;
             continue;
         }
 
-        //send command to server with sendTo
 
-        /* This code will get the server's response once it's been sent by reading from the socket file, and print it to stdout.*/
+
+        /* This code will get the server's response once it's been sent by reading from the socket file, and print it to stdout.
         int buflen;
         while((buflen = recvfrom(socketFD, buffer, sizeof(buffer), 0, (struct sockaddr *)&remoteSock, &remoteSockLen)) > 0) {
             //Handle server response
-        }
+        }*/
     }
     return 0;
 }
