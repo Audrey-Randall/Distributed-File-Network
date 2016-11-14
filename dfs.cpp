@@ -38,8 +38,11 @@ string homeDir;
 bool caughtSigInt;
 int sock_fd;
 int port;
+FILE* logStream;
+std::string logName;
 
 pthread_mutex_t q_lock;
+pthread_mutex_t log_lock;
 queue<Ele*> q;
 int threadsActive;
 vector<string> indexes;
@@ -65,6 +68,10 @@ typedef struct Entry{
     int len;
 }Entry;
 
+void print(){
+
+}
+
 void catch_sigint(int s){
     cout<<"caught signal "<<s<<", exiting"<<endl;
     caughtSigInt = true;
@@ -73,6 +80,7 @@ void catch_sigint(int s){
         threadsActive--;
     }
     pthread_mutex_destroy(&q_lock);
+    pthread_mutex_destroy(&log_lock);
     close(sock_fd);
     while(!q.empty()){
         cout<<"Stuff left in queue?"<<endl;
@@ -82,63 +90,6 @@ void catch_sigint(int s){
     }
     //cout<<"afsfsafsaff"<<endl;
     //exit(0);
-}
-
-void set_home_dir(){
-    ifstream conf;
-    bool foundExt = false;
-    conf.open("ws.conf");
-    if (!conf.good()) {
-        perror("No configuration file found");
-        printf("Fatal error: exiting.\n");
-        exit(1);
-    }
-
-    while (!conf.eof()) {
-        char buf[MAX_CHARS_PER_LINE];
-        conf.getline(buf, MAX_CHARS_PER_LINE);
-        int n = 0;
-        const char* token[MAX_TOKENS_PER_LINE] = {}; // initialize to 0
-
-        // parse the line
-        //strtok returns 0 (NULL?) if it can't find a token
-        token[0] = strtok(buf, DELIMITER);
-        int numTokens;
-        if (token[0]) {
-            for (n = 1; n < MAX_TOKENS_PER_LINE; n++) {
-                token[n] = strtok(0, DELIMITER);
-                if (!token[n]) {
-                    numTokens = n-1;
-                    break; // no more tokens
-                }
-            }
-        }
-        string word0(token[0]);
-        if(word0 == "DocumentRoot"){
-            int n;
-            char* realDir = new char[strlen(token[1])-2];
-            for(n = 1; n < strlen(token[1])-1; n++) {
-                realDir[n-1]=token[1][n];
-            }
-            string realRealDir(realDir);
-            homeDir = realRealDir;
-        }
-        if(word0 == "Listen") {
-            stringstream strVal;
-            strVal<<token[1];
-            strVal>>port;
-            cout<<"Port is: "<<port<<endl;
-        }
-        if(word0 == "DirectoryIndex") {
-            for(int i = 1; i < numTokens; i++) {
-                string idx(token[i]);
-                indexes.push_back(idx);
-            }
-            for(int i = 0; i < indexes.size(); i++) {
-                cout<<"Indexes["<<i<<"] is "<<indexes[i]<<endl;
-            }
-        }
-    }
 }
 
 //Credit for a lot of this parsing code goes to http://cs.dvc.edu/HowTo_Cparse.html
@@ -410,7 +361,11 @@ void *crawlQueue(void *payload){
         }
         pthread_mutex_unlock(&q_lock);
         if(success) {
-            sendFile(ele->client_fd, ele->client_msg);
+            //sendFile(ele->client_fd, ele->client_msg);
+            //std::cout<<"Received message "<<ele->client_msg<<std::endl;
+            logStream = fopen(logName.c_str(), "a");
+            fprintf(logStream, "Received message %s\n", ele->client_msg.c_str());
+            fclose(logStream);
         } else{
             //if queue was empty wait and check again
             int sleep_time = rand()%101;
@@ -432,52 +387,71 @@ void init(){
 }
 
 int main(int argc, char* argv[]) {
-    struct sockaddr_in server, client;
+    struct sockaddr_in servSock, client;
     struct sigaction sigIntHandler;
     int client_fd, read_size;
     socklen_t sockaddr_len;
+    char client_req[2000];
+    std::string locLogName = "log.txt";
+    std::string dir(argv[2]);
 
+    //Log file name
+    logName = dir + "/" + locLogName;
+    std::cout<<logName<<endl;
+    logStream = fopen(logName.c_str(), "w");
+    fclose(logStream);
+
+    //Set up signal handler for SIGINT
     sigIntHandler.sa_handler = catch_sigint;
     sigemptyset(&sigIntHandler.sa_mask);
     sigIntHandler.sa_flags = 0;
-
-    /*sigSegHandler.sa_handler = catch_sigseg;
-    sigemptyset(&sigSegHandler.sa_mask);
-    sigSegHandler.sa_flags = 0;*/
-
     sigaction(SIGINT, &sigIntHandler, NULL);
-    //sigaction(SIGSEGV, &sigSegHandler, NULL);
 
     //Initialize mutexes and queue
     if(pthread_mutex_init(&q_lock, NULL) != 0) {
-        fprintf(stderr, "ERROR: Mutex initialization failed. \n");
+        fprintf(stderr, "ERROR: Mutex initialization failed on q_lock. \n");
+        exit(1);
+    }
+    if(pthread_mutex_init(&log_lock, NULL) != 0) {
+        fprintf(stderr, "ERROR: Mutex initialization failed on log_lock. \n");
         exit(1);
     }
 
-    set_home_dir();
+    //Initialize socket
+    homeDir.assign(argv[1]);
     if((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("Socket creation error");
+        logStream = fopen(logName.c_str(), "a");
+        fprintf(logStream, "Socket creation error: %s\n", strerror(errno));
+        fclose(logStream);
+        //perror("Socket creation error");
         return 1;
     }
     //Allows immediate reuse of socket: credit to stack overflow
     int yes = 1;
     if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
-        perror("setsockopt");
+      logStream = fopen(logName.c_str(), "a");
+      fprintf(logStream, "setsockopt: %s\n", strerror(errno));
+      fclose(logStream);
         exit(1);
     }
 
-    server.sin_family = AF_INET;
-    server.sin_port= htons(port);
-    server.sin_addr.s_addr = htonl(INADDR_ANY);
-    sockaddr_len = sizeof(server);
+    servSock.sin_family = AF_INET;
+    servSock.sin_port= htons(atoi(argv[1]));
+    servSock.sin_addr.s_addr = htonl(INADDR_ANY);
+    sockaddr_len = sizeof(servSock);
 
-    if(bind(sock_fd,(struct sockaddr *)&server , sizeof(server)) < 0) {
-        perror("Bind error");
+    std::cout<<"Port is "<<htons(atoi(argv[1]))<<std::endl;
+    if(bind(sock_fd,(struct sockaddr *)&servSock , sizeof(servSock)) < 0) {
+      logStream = fopen(logName.c_str(), "a");
+      fprintf(logStream, "Bind error: %s\n", strerror(errno));
+      fclose(logStream);
         return 1;
     }
 
     if(listen(sock_fd, 10) < 0) {
-        perror("Listen error");
+      logStream = fopen(logName.c_str(), "a");
+      fprintf(logStream, "Listen error: %s\n", strerror(errno));
+      fclose(logStream);
         return 1;
     }
 
@@ -485,22 +459,24 @@ int main(int argc, char* argv[]) {
     for(int i = 0; i < 10; i++) {
         int retVal = pthread_create(&senderThreads[i], NULL, crawlQueue, NULL);
         if(retVal) {
-            perror("Error in pthread_create");
-            exit(1);
+          logStream = fopen(logName.c_str(), "a");
+          fprintf(logStream, "pthread_create error: %s\n", strerror(errno));
+          fclose(logStream);
+          exit(1);
         } else {
-            threadsActive++;
+          threadsActive++;
         }
     }
 
     while(!caughtSigInt && threadsActive > 0) {
-        cout<<"threads active = "<<threadsActive<<endl;
         if((client_fd = accept(sock_fd, (struct sockaddr *)&client, &sockaddr_len)) < 0) {
-            perror("Accept error");
+            logStream = fopen(logName.c_str(), "a");
+            fprintf(logStream, "Accept error: %s\n", strerror(errno));
+            fclose(logStream);
             while(threadsActive > 0);
             //cout<<"threadsActive after accept error: "<<threadsActive<<endl;
             return 1;
         }
-        //if(caughtSigInt) return 0;
         while((read_size = recv(client_fd , client_req , 2000 , 0)) > 0 ) {
             Ele* ele = new Ele;
             string msg(client_req);
@@ -514,7 +490,9 @@ int main(int argc, char* argv[]) {
         }
 
         if(read_size < 0) {
-            perror("Recv failed");
+            logStream = fopen(logName.c_str(), "a");
+            fprintf(logStream, "Recv error: %s\n", strerror(errno));
+            fclose(logStream);
             while(threadsActive > 0);
             //cout<<"threadsActive after accept error: "<<threadsActive<<endl;
             return 1;
