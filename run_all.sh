@@ -3,8 +3,9 @@ make clean; make
 ./dfs 10002 DFS2 &
 ./dfs 10003 DFS3 &
 ./dfs 10004 DFS4 &
-./dfc
+./dfc dfc.conf
 pkill dfs > /dev/null
+wait %2 %3
 echo "Log file 1: "
 cat DFS1/log.txt
 echo "Log file 2: "
