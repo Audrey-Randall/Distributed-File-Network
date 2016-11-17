@@ -106,18 +106,14 @@ int parseConfig(char* conf){
   return 0;
 }
 
+std::string buildMsg(std::string flag, std::string msg){
+  return user.id+" "+user.pw+"#"+flag+"#"+msg;
+}
 
 int testSend() {
     for(int i = 0; i < 4; i++) {
-        std::string tester = "Testing " + i; //does pointer math not concatenation, this isn't Javascript you numpty
+        std::string tester = user.id+" "+user.pw+"#Testing";
         std::cout<<tester<<std::endl;
-        //Connect client socket to remote port. This means client sends to that port, but it listens on whichever one the kernel assigns it.
-        struct sockaddr_in * curSockAddr = remoteSocks[i];
-        if(connect(clientFDvec[i], (struct sockaddr *)curSockAddr, sizeof(*curSockAddr)) < 0) {
-           std::cout<<"Connecting to "<<curSockAddr->sin_port<<" at "<<curSockAddr->sin_addr.s_addr<<" 1: "<<htons(10001)<<" 2: "<<htons(10002)<<" 3: "<<htons(10003)<<" 4: "<<htons(10004)<<std::endl;
-           perror("connection failed error");
-           return 1;
-        }
         if((sendto(clientFDvec[i], tester.c_str(), tester.length(), 0, (struct sockaddr*)remoteSocks[i], sizeof(*(remoteSocks[i])))) < 0) {
             printf("Error in sendto on socket %d", i);
             perror("");
@@ -128,18 +124,12 @@ int testSend() {
 
 int doList() {
   for(int i = 0; i < 4; i++) {
-      std::string msgType = "L";
+      std::string msg = buildMsg("L", "");
       char buffer[1024];
       int recSize;
       unsigned int sockLen = sizeof(remoteSocks[0]);
-      //Connect client socket to remote port. This means client sends to that port, but it listens on whichever one the kernel assigns it.
-      struct sockaddr_in * curSockAddr = remoteSocks[i];
-      if(connect(clientFDvec[i], (struct sockaddr *)curSockAddr, sizeof(*curSockAddr)) < 0) {
-         std::cout<<"Connecting to "<<curSockAddr->sin_port<<" at "<<curSockAddr->sin_addr.s_addr<<" 1: "<<htons(10001)<<" 2: "<<htons(10002)<<" 3: "<<htons(10003)<<" 4: "<<htons(10004)<<std::endl;
-         perror("connection failed error");
-         return 1;
-      }
-      if((sendto(clientFDvec[i], msgType.c_str(), msgType.length(), 0, (struct sockaddr*)remoteSocks[i], sizeof(*(remoteSocks[i])))) < 0) {
+
+      if((sendto(clientFDvec[i], msg.c_str(), msg.length(), 0, (struct sockaddr*)remoteSocks[i], sizeof(*(remoteSocks[i])))) < 0) {
           printf("Error in sendto on socket %d", i);
           perror("");
       }
@@ -163,17 +153,11 @@ int doPut() {
 int authenticate() {
   std::cout<<"Checking credentials..."<<std::endl;
   for(int i = 0; i < 4; i++) {
-      std::string credentials = "A" + user.id + " " + user.pw;
+      std::string credentials = buildMsg("A", "blargh");
       char buffer[1024];
       int recSize;
       unsigned int sockLen = sizeof(remoteSocks[0]);
-      //Connect client socket to remote port. This means client sends to that port, but it listens on whichever one the kernel assigns it.
-      struct sockaddr_in * curSockAddr = remoteSocks[i];
-      if(connect(clientFDvec[i], (struct sockaddr *)curSockAddr, sizeof(*curSockAddr)) < 0) {
-         std::cout<<"Connecting to "<<curSockAddr->sin_port<<" at "<<curSockAddr->sin_addr.s_addr<<" 1: "<<htons(10001)<<" 2: "<<htons(10002)<<" 3: "<<htons(10003)<<" 4: "<<htons(10004)<<std::endl;
-         perror("connection failed error");
-         return 1;
-      }
+
       if((sendto(clientFDvec[i], credentials.c_str(), credentials.length(), 0, (struct sockaddr*)remoteSocks[i], sizeof(*(remoteSocks[i])))) < 0) {
           printf("Error in sendto on socket %d", i);
           perror("");
@@ -184,7 +168,7 @@ int authenticate() {
           std::cout<<"Fatal error: User credentials are not valid on server #"<<i<<std::endl;
           exit(1);
         }
-        else std::cout<<"Credentials accepted by server #"<<i<<endl;
+        else std::cout<<"Credentials accepted by server #"<<i<<std::endl;
       }
       if(recSize < 0) perror("Recvfrom error"); //will be 0 if no error
   }
@@ -215,7 +199,7 @@ int main(int argc, char* argv[]){
     //Parse config file
     parseConfig(argv[1]);
 
-    //Init client socket
+    //Init client sockets, one for each server I need to talk to
     if((clientFD1 = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         printf("Error initializing client socket 1\n");
         return 1;
@@ -268,6 +252,16 @@ int main(int argc, char* argv[]){
     remoteSocks.push_back(&servsock2);
     remoteSocks.push_back(&servsock3);
     remoteSocks.push_back(&servsock4);
+
+    for(int i = 0; i < 4; i++) {
+      //Connect client socket to remote port. This means client sends to that port, but it listens on whichever one the kernel assigns it.
+      struct sockaddr_in * curSockAddr = remoteSocks[i];
+      if(connect(clientFDvec[i], (struct sockaddr *)curSockAddr, sizeof(*curSockAddr)) < 0) {
+         std::cout<<"Connecting to "<<curSockAddr->sin_port<<" at "<<curSockAddr->sin_addr.s_addr<<" 1: "<<htons(10001)<<" 2: "<<htons(10002)<<" 3: "<<htons(10003)<<" 4: "<<htons(10004)<<std::endl;
+         perror("connection failed error");
+         return 1;
+      }
+    }
 
     authenticate();
 

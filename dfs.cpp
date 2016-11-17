@@ -40,9 +40,10 @@ int sock_fd;
 int port;
 FILE* logStream;
 std::string logName;
+struct sockaddr_in servSock, client;
 
 pthread_mutex_t q_lock;
-pthread_mutex_t log_lock;
+pthread_mutex_t client_sock_lock;
 queue<Ele*> q;
 int threadsActive;
 vector<string> indexes;
@@ -93,13 +94,87 @@ int parseConfig(char* conf){
       }while ((pch = strtok(NULL, " :"))!= NULL);
     }
   }while(!confFile.eof());
-  for(int i = 0; i < users.size; i++){
-    std::cout<<"User and pw"<<std::endl;
+
+  /*logStream = fopen(logName.c_str(), "a");
+  for(int i = 0; i < users.size(); i++){
+    fprintf(logStream, "%s: %s\n", users[i].id.c_str(), users[i].pw.c_str());
   }
+  fclose(logStream);*/
   confFile.close();
   return 0;
 }
 
+bool authenticate(std::string id, std::string pw){
+  for(int i = 0; i < users.size(); i++) {
+    if(users[i].id == id) {
+      if(users[i].pw == pw) {
+        logStream = fopen(logName.c_str(), "a");
+        fprintf(logStream, "Credentials verified.");
+        fclose(logStream);
+        return true;
+      }
+      else {
+        logStream = fopen(logName.c_str(), "a");
+        fprintf(logStream, "Incorrect password.");
+        fclose(logStream);
+        return true; //should be false
+      }
+    }
+  }
+  logStream = fopen(logName.c_str(), "a");
+  fprintf(logStream, "User not found.\n");
+  fclose(logStream);
+  return true; //should be false
+}
+
+void respond(std::string msg) {
+  //pthread_mutex_lock(&client_sock_lock);
+  if((send(sock_fd, msg.c_str(), msg.length(), 0)) < 0) {
+    //pthread_mutex_unlock(&client_sock_lock);
+    logStream = fopen(logName.c_str(), "a");
+    fprintf(logStream, "respond() failed!\n");
+    fclose(logStream);
+    perror("");
+  } else {
+    logStream = fopen(logName.c_str(), "a");
+    fprintf(logStream, "respond() succeeded\n");
+    fclose(logStream);
+    //pthread_mutex_unlock(&client_sock_lock);
+  }
+}
+
+void handle_msg(std::string full_msg){
+  int space = full_msg.find(' ');
+  int credEnd = full_msg.find('#');
+  std::string msg = full_msg.substr(credEnd+1);
+  char flag = msg[0];
+  if(space == std::string::npos || credEnd == std::string::npos) {
+    logStream = fopen(logName.c_str(), "a");
+    fprintf(logStream, "User authentication failed: Invalid username/password format \"%s\"\n", msg.c_str());
+    fclose(logStream);
+    respond("INVALID");
+  } else {
+    std::string id = full_msg.substr(0, space);
+    std::string pw = full_msg.substr(space+1);
+    if(!authenticate(id, pw)) respond("INVALID");
+    respond("VALID");
+  }
+  switch(flag){
+    case 'A':
+      break;
+    case 'L':
+      break;
+    case 'G':
+      break;
+    case 'P':
+      break;
+    default:
+    logStream = fopen(logName.c_str(), "a");
+    fprintf(logStream, "Received unknown message.\n");
+    fclose(logStream);
+    exit(1);
+  }
+}
 
 void catch_sigint(int s){
     cout<<"caught signal "<<s<<", exiting"<<endl;
@@ -109,7 +184,7 @@ void catch_sigint(int s){
         threadsActive--;
     }
     pthread_mutex_destroy(&q_lock);
-    pthread_mutex_destroy(&log_lock);
+    pthread_mutex_destroy(&client_sock_lock);
     close(sock_fd);
     while(!q.empty()){
         cout<<"Stuff left in queue?"<<endl;
@@ -121,7 +196,7 @@ void catch_sigint(int s){
     //exit(0);
 }
 
-int sendFile(int client_fd, string client_msg) {
+int sendFile(int client_fd, string client_msg, string filepath) {
     FILE* response;
     struct sockaddr_in remoteSock;
     int fileSize = 0;
@@ -129,7 +204,6 @@ int sendFile(int client_fd, string client_msg) {
     int i;
     int is404 = 0;
     string header_str;
-    Header* header = new Header;
     string ext;
     string fullPath;
     bool foundIdx = false;
@@ -143,7 +217,7 @@ int sendFile(int client_fd, string client_msg) {
     bool* invalidVersion = new bool;
     *invalidVersion = false;
 
-    string filepath = ???
+    //string filepath = ???
 
     fullPath = homeDir + filepath;
 
@@ -153,7 +227,7 @@ int sendFile(int client_fd, string client_msg) {
     cout<<"ext is "<<endl;
     response = fopen(fullPath.c_str(), "rb");
     if(response == NULL) {
-        logStream = fopen(logName, "a");
+        logStream = fopen(logName.c_str(), "a");
         fprintf(logStream, "Error opening file. Full path: %s\n", fullPath.c_str());
         fclose(logStream);
 
@@ -176,7 +250,9 @@ int sendFile(int client_fd, string client_msg) {
             //int i;
             //for(i = 0; i < n; i++) printf("%c", buffer[i]);
         }
+        pthread_mutex_lock(&client_sock_lock);
         int sent = send(client_fd, charLoad, payload.length(), 0);
+        pthread_mutex_unlock(&client_sock_lock);
         bzero(buffer, sizeof(buffer));
     }
     if (n < 0) printf("Read error\n");
@@ -202,6 +278,7 @@ void *crawlQueue(void *payload){
             logStream = fopen(logName.c_str(), "a");
             fprintf(logStream, "Received message %s\n", ele->client_msg.c_str());
             fclose(logStream);
+            handle_msg(ele->client_msg);
         } else{
             //if queue was empty wait and check again
             int sleep_time = rand()%101;
@@ -217,19 +294,28 @@ void init(){
 }
 
 int main(int argc, char* argv[]) {
-    struct sockaddr_in servSock, client;
+    struct sockaddr_in client;
     struct sigaction sigIntHandler;
     int client_fd, read_size;
     socklen_t sockaddr_len;
     char client_req[2000];
     std::string locLogName = "log.txt";
     std::string dir(argv[2]);
+    std::string confName = "dfs.conf";
 
     //Log file name
     logName = dir + "/" + locLogName;
-    std::cout<<logName<<endl;
+
+    //Clear log file
     logStream = fopen(logName.c_str(), "w");
+    if(logStream == NULL) {
+      printf("HORRIBLE ERRORS: log name is %s\n", logName.c_str());
+      exit(1);
+    }
     fclose(logStream);
+
+    //parse configuration
+    parseConfig(strdup(confName.c_str()));
 
     //Set up signal handler for SIGINT
     sigIntHandler.sa_handler = catch_sigint;
@@ -237,13 +323,13 @@ int main(int argc, char* argv[]) {
     sigIntHandler.sa_flags = 0;
     sigaction(SIGINT, &sigIntHandler, NULL);
 
-    //Initialize mutexes and queue
+    //Initialize mutexes
     if(pthread_mutex_init(&q_lock, NULL) != 0) {
         fprintf(stderr, "ERROR: Mutex initialization failed on q_lock. \n");
         exit(1);
     }
-    if(pthread_mutex_init(&log_lock, NULL) != 0) {
-        fprintf(stderr, "ERROR: Mutex initialization failed on log_lock. \n");
+    if(pthread_mutex_init(&client_sock_lock, NULL) != 0) {
+        fprintf(stderr, "ERROR: Mutex initialization failed on client_sock_lock. \n");
         exit(1);
     }
 
@@ -270,7 +356,6 @@ int main(int argc, char* argv[]) {
     servSock.sin_addr.s_addr = htonl(INADDR_ANY);
     sockaddr_len = sizeof(servSock);
 
-    std::cout<<"Port is "<<htons(atoi(argv[1]))<<std::endl;
     if(bind(sock_fd,(struct sockaddr *)&servSock , sizeof(servSock)) < 0) {
       logStream = fopen(logName.c_str(), "a");
       fprintf(logStream, "Bind error: %s\n", strerror(errno));
@@ -299,6 +384,7 @@ int main(int argc, char* argv[]) {
     }
 
     while(!caughtSigInt && threadsActive > 0) {
+        //pthread_mutex_lock(&client_sock_lock);
         if((client_fd = accept(sock_fd, (struct sockaddr *)&client, &sockaddr_len)) < 0) {
             logStream = fopen(logName.c_str(), "a");
             fprintf(logStream, "Accept error: %s\n", strerror(errno));
@@ -307,6 +393,7 @@ int main(int argc, char* argv[]) {
             //cout<<"threadsActive after accept error: "<<threadsActive<<endl;
             return 1;
         }
+        //pthread_mutex_unlock(&client_sock_lock);
         while((read_size = recv(client_fd , client_req , 2000 , 0)) > 0 ) {
             Ele* ele = new Ele;
             string msg(client_req);
@@ -316,7 +403,6 @@ int main(int argc, char* argv[]) {
             q.push(ele);
             pthread_mutex_unlock(&q_lock);
             bzero(client_req, 2000);
-            fflush(stdout);
         }
 
         if(read_size < 0) {
