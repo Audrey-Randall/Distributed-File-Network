@@ -105,17 +105,20 @@ int parseConfig(char* conf){
 }
 
 bool authenticate(std::string id, std::string pw){
+  logStream = fopen(logName.c_str(), "a");
+  fprintf(logStream, "id is %s and pw is %s\n", id.c_str(), pw.c_str());
+  fclose(logStream);
   for(int i = 0; i < users.size(); i++) {
     if(users[i].id == id) {
       if(users[i].pw == pw) {
         logStream = fopen(logName.c_str(), "a");
-        fprintf(logStream, "Credentials verified.");
+        fprintf(logStream, "Credentials verified.\n");
         fclose(logStream);
         return true;
       }
       else {
         logStream = fopen(logName.c_str(), "a");
-        fprintf(logStream, "Incorrect password.");
+        fprintf(logStream, "Incorrect password.\n");
         fclose(logStream);
         return true; //should be false
       }
@@ -127,10 +130,9 @@ bool authenticate(std::string id, std::string pw){
   return true; //should be false
 }
 
-void respond(std::string msg) {
+void respond(int client_fd, std::string msg) {
   //pthread_mutex_lock(&client_sock_lock);
-  cout<<"WAAAAAAAAAT "<<endl;
-  if((send(sock_fd, msg.c_str(), msg.length(), 0)) < 0) {
+  if((send(client_fd, msg.c_str(), msg.length(), 0)) < 0) {
     //pthread_mutex_unlock(&client_sock_lock);
     logStream = fopen(logName.c_str(), "a");
     fprintf(logStream, "respond() failed!\n");
@@ -144,7 +146,7 @@ void respond(std::string msg) {
   }
 }
 
-void handle_msg(std::string full_msg){
+void handle_msg(int client_fd, std::string full_msg){
   int space = full_msg.find(' ');
   int credEnd = full_msg.find('#');
   std::string msg = full_msg.substr(credEnd+1);
@@ -153,12 +155,12 @@ void handle_msg(std::string full_msg){
     logStream = fopen(logName.c_str(), "a");
     fprintf(logStream, "User authentication failed: Invalid username/password format \"%s\"\n", msg.c_str());
     fclose(logStream);
-    respond("INVALID");
+    respond(client_fd, "INVALID");
   } else {
     std::string id = full_msg.substr(0, space);
-    std::string pw = full_msg.substr(space+1);
-    if(!authenticate(id, pw)) respond("INVALID");
-    respond("VALID");
+    std::string pw = full_msg.substr(space+1, credEnd-space-1);
+    if(!authenticate(id, pw)) respond(client_fd, "INVALID");
+    respond(client_fd, "VALID");
   }
   switch(flag){
     case 'A':
@@ -173,6 +175,7 @@ void handle_msg(std::string full_msg){
     logStream = fopen(logName.c_str(), "a");
     fprintf(logStream, "Received unknown message.\n");
     fclose(logStream);
+    sleep(1);
     exit(1);
   }
 }
@@ -195,6 +198,12 @@ void catch_sigint(int s){
     }
     //cout<<"afsfsafsaff"<<endl;
     //exit(0);
+}
+
+void catch_sigpipe(int s) {
+  cout<<"Caught SIGPIPE"<<endl;
+  sleep(10);
+  exit(1);
 }
 
 int sendFile(int client_fd, string client_msg, string filepath) {
@@ -279,7 +288,7 @@ void *crawlQueue(void *payload){
             logStream = fopen(logName.c_str(), "a");
             fprintf(logStream, "Received message %s\n", ele->client_msg.c_str());
             fclose(logStream);
-            handle_msg(ele->client_msg);
+            handle_msg(ele->client_fd, ele->client_msg);
         } else{
             //if queue was empty wait and check again
             int sleep_time = rand()%101;
@@ -296,7 +305,7 @@ void init(){
 
 int main(int argc, char* argv[]) {
     struct sockaddr_in client;
-    struct sigaction sigIntHandler;
+    struct sigaction sigIntHandler, sigPipeHandler;
     int client_fd, read_size;
     socklen_t sockaddr_len;
     char client_req[2000];
@@ -318,11 +327,16 @@ int main(int argc, char* argv[]) {
     //parse configuration
     parseConfig(strdup(confName.c_str()));
 
-    //Set up signal handler for SIGINT
+    //Set up signal handler for SIGINT and SIGPIPE
     sigIntHandler.sa_handler = catch_sigint;
     sigemptyset(&sigIntHandler.sa_mask);
     sigIntHandler.sa_flags = 0;
     sigaction(SIGINT, &sigIntHandler, NULL);
+
+    sigPipeHandler.sa_handler = catch_sigpipe;
+    sigemptyset(&sigPipeHandler.sa_mask);
+    sigPipeHandler.sa_flags = 0;
+    sigaction(SIGPIPE, &sigPipeHandler, NULL);
 
     //Initialize mutexes
     if(pthread_mutex_init(&q_lock, NULL) != 0) {

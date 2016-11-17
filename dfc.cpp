@@ -162,14 +162,15 @@ int authenticate() {
           printf("Error in sendto on socket %d", i);
           perror("");
       }
-      while((recSize = recvfrom(clientFDvec[i], buffer, 1024, 0, (struct sockaddr*)remoteSocks[i], (socklen_t*)&sockLen)) > 0) {
+      do {
+        recSize = recvfrom(clientFDvec[i], buffer, 1024, 0, (struct sockaddr*)remoteSocks[i], (socklen_t*)&sockLen);
         std::string response(buffer);
         if(response != "VALID") {
-          std::cout<<"Fatal error: User credentials are not valid on server #"<<i<<std::endl;
+          std::cout<<"Fatal error: User credentials are not valid on server #"<<i+1<<std::endl;
           exit(1);
         }
-        else std::cout<<"Credentials accepted by server #"<<i<<std::endl;
-      }
+        else std::cout<<"Credentials accepted by server #"<<i+1<<std::endl;
+      }while(recSize == 1024);
       if(recSize < 0) perror("Recvfrom error"); //will be 0 if no error
   }
   return 0;
@@ -279,7 +280,8 @@ int main(int argc, char* argv[]){
         while(iss) {
           std::string in;
           iss >> in;
-          std::cout << "Substring: " << in << std::endl;
+          if(in == "") break;
+          //std::cout << "Substring: " << in << std::endl;
           if(!idx) command = in;
           else {
               args.push_back(in);

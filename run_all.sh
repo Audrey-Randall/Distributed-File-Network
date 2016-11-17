@@ -3,6 +3,7 @@ make clean; make
 ./dfs 10002 DFS2 &
 ./dfs 10003 DFS3 &
 ./dfs 10004 DFS4 &
+sleep 5
 ./dfc dfc.conf
 pkill dfs > /dev/null
 wait %2 %3
