@@ -129,6 +129,7 @@ bool authenticate(std::string id, std::string pw){
 
 void respond(std::string msg) {
   //pthread_mutex_lock(&client_sock_lock);
+  cout<<"WAAAAAAAAAT "<<endl;
   if((send(sock_fd, msg.c_str(), msg.length(), 0)) < 0) {
     //pthread_mutex_unlock(&client_sock_lock);
     logStream = fopen(logName.c_str(), "a");
@@ -348,7 +349,7 @@ int main(int argc, char* argv[]) {
       logStream = fopen(logName.c_str(), "a");
       fprintf(logStream, "setsockopt: %s\n", strerror(errno));
       fclose(logStream);
-        exit(1);
+      exit(1);
     }
 
     servSock.sin_family = AF_INET;
