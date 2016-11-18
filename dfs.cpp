@@ -198,7 +198,7 @@ void handle_msg(int client_fd, std::string full_msg){
     case 'G':
       break;
     case 'P':
-      seg = atoi(strdup(tagVals[2].c_str()));
+      seg = atoi(tagVals[4].c_str());
       handleSegment(tagVals[0], tagVals[5], seg);
       break;
     default:
