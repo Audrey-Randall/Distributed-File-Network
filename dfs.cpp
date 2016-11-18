@@ -16,6 +16,7 @@
 #include <math.h>
 #include <queue>
 #include <pthread.h>
+#include <dirent.h>
 
 //C++
 #include <iostream>
@@ -46,6 +47,7 @@ std::string tags[NUMTAGS];// = {"id","pw","flag", "file","segment", "msg"}
 
 pthread_mutex_t q_lock;
 pthread_mutex_t client_sock_lock;
+pthread_mutex_t dir_lock;
 queue<Ele*> q;
 int threadsActive;
 vector<string> indexes;
@@ -132,10 +134,49 @@ bool authenticate(std::string id, std::string pw){
   return true; //should be false
 }
 
-int handleSegment(std::string id, std::string msg, int seg){
-  logStream = fopen(logName.c_str(), "a");
+//Credit to "Peter Parker" on Stack Overflow
+int handleSegment(std::string id, std::string msg, std::string filename, std::string seg){
+  FILE* file;
+  /*logStream = fopen(logName.c_str(), "a");
   fprintf(logStream, "In handle_segment, id = %s, msg = %s, seg = %d\n", id.c_str(), msg.c_str(), seg);
-  fclose(logStream);
+  fclose(logStream);*/
+  DIR *dir;
+  struct dirent *ent;
+  std::string dirName = homeDir+"/"+id;
+  pthread_mutex_lock(&dir_lock);
+  if ((dir = opendir (dirName.c_str())) != NULL) {
+    /* print all the files and directories within directory
+      while ((ent = readdir (dir)) != NULL) {
+      printf ("%s\n", ent->d_name);
+    }*/
+    //cout<<"BLAAAAAH"<<endl;
+    closedir (dir);
+  } else {
+    //perror("WTF happened???");
+    std::string mkdir = "mkdir "+dirName;
+    sleep(1);
+    if(system(mkdir.c_str()) < 0) {
+      logStream = fopen(logName.c_str(), "a");
+      fprintf(logStream, "HORRIBLE MKDIR ERRORS RUN FOR YOUR LIFE\n");
+      fclose(logStream);
+    }
+    //mkdir(homeDir+"/"+id)
+  }
+  std::string newName = dirName+"/."+filename+seg;
+  file = fopen(newName.c_str(), "wb");
+  if(file == NULL) {
+    logStream = fopen(logName.c_str(), "a");
+    fprintf(logStream, "ERROR: Cannot create/open file segment %s\n", newName.c_str());
+    fclose(logStream);
+    return -1;
+  }
+  if(fwrite(msg.c_str(), sizeof(char), msg.length(), file) != msg.length()) {
+    logStream = fopen(logName.c_str(), "a");
+    fprintf(logStream, "ERROR: Didn't write the correct number of bytes to file segment %s\n", newName.c_str());
+    fclose(logStream);
+  }
+  fclose(file);
+  pthread_mutex_unlock(&dir_lock);
   return 0;
 }
 
@@ -199,7 +240,7 @@ void handle_msg(int client_fd, std::string full_msg){
       break;
     case 'P':
       seg = atoi(tagVals[4].c_str());
-      handleSegment(tagVals[0], tagVals[5], seg);
+      handleSegment(tagVals[0], tagVals[5], tagVals[3], tagVals[4]);
       break;
     default:
     logStream = fopen(logName.c_str(), "a");
@@ -217,6 +258,7 @@ void catch_sigint(int s){
     }
     pthread_mutex_destroy(&q_lock);
     pthread_mutex_destroy(&client_sock_lock);
+    pthread_mutex_destroy(&dir_lock);
     close(sock_fd);
     while(!q.empty()){
         cout<<"Stuff left in queue?"<<endl;
@@ -382,9 +424,13 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "ERROR: Mutex initialization failed on client_sock_lock. \n");
         exit(1);
     }
+    if(pthread_mutex_init(&dir_lock, NULL) != 0) {
+        fprintf(stderr, "ERROR: Mutex initialization failed on dir_lock. \n");
+        exit(1);
+    }
 
     //Initialize socket
-    homeDir.assign(argv[1]);
+    homeDir.assign(argv[2]);
     if((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         logStream = fopen(logName.c_str(), "a");
         fprintf(logStream, "Socket creation error: %s\n", strerror(errno));
