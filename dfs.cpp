@@ -41,6 +41,8 @@ int port;
 FILE* logStream;
 std::string logName;
 struct sockaddr_in servSock, client;
+#define NUMTAGS 6
+std::string tags[NUMTAGS];// = {"id","pw","flag", "file","segment", "msg"}
 
 pthread_mutex_t q_lock;
 pthread_mutex_t client_sock_lock;
@@ -130,6 +132,13 @@ bool authenticate(std::string id, std::string pw){
   return true; //should be false
 }
 
+int handleSegment(std::string id, std::string msg, int seg){
+  logStream = fopen(logName.c_str(), "a");
+  fprintf(logStream, "In handle_segment, id = %s, msg = %s, seg = %d\n", id.c_str(), msg.c_str(), seg);
+  fclose(logStream);
+  return 0;
+}
+
 void respond(int client_fd, std::string msg) {
   //pthread_mutex_lock(&client_sock_lock);
   if((send(client_fd, msg.c_str(), msg.length(), 0)) < 0) {
@@ -146,37 +155,56 @@ void respond(int client_fd, std::string msg) {
   }
 }
 
+//returns element enclosed within tag if it exists, "NOTFOUND" if it does not
+std::string searchXML(std::string tag, std::string msg){
+  std::string s = "<"+tag+">";
+  std::string e = "</"+tag+">";
+  int start = msg.find(s);
+  int end = msg.find(e);
+  if(start == std::string::npos || end == std::string::npos) return "NOTFOUND";
+  else return msg.substr(start+s.length(), end - (start + s.length()));
+}
+
 void handle_msg(int client_fd, std::string full_msg){
-  int space = full_msg.find(' ');
-  int credEnd = full_msg.find('#');
-  std::string msg = full_msg.substr(credEnd+1);
-  char flag = msg[0];
-  if(space == std::string::npos || credEnd == std::string::npos) {
+  //Tags are id, pw, flag, file, segment, msg
+  int seg;
+  std::string tagVals[NUMTAGS];
+  for(int i = 0; i < NUMTAGS; i++) {
+    tagVals[i] = searchXML(tags[i], full_msg);
+    /*logStream = fopen(logName.c_str(), "a");
+    fprintf(logStream, "TagVals[i]: %s tags[i]: %s\n", tagVals[i].c_str(), tags[i].c_str());
+    fclose(logStream);*/
+  }
+  if(tagVals[0] == "NOTFOUND" || tagVals[1] == "NOTFOUND") {
     logStream = fopen(logName.c_str(), "a");
-    fprintf(logStream, "User authentication failed: Invalid username/password format \"%s\"\n", msg.c_str());
+    fprintf(logStream, "User authentication failed: Invalid username/password format\n");
     fclose(logStream);
     respond(client_fd, "INVALID");
-  } else {
-    std::string id = full_msg.substr(0, space);
-    std::string pw = full_msg.substr(space+1, credEnd-space-1);
-    if(!authenticate(id, pw)) respond(client_fd, "INVALID");
-    respond(client_fd, "VALID");
   }
+  if(!authenticate(tagVals[0], tagVals[1])) {
+    respond(client_fd, "INVALID");
+    return;
+  }
+  respond(client_fd, "VALID");
+  char flag = tagVals[2][0];
+
+
   switch(flag){
     case 'A':
+      //Authentication already done
       break;
     case 'L':
       break;
     case 'G':
       break;
     case 'P':
+      seg = atoi(strdup(tagVals[2].c_str()));
+      handleSegment(tagVals[0], tagVals[5], seg);
       break;
     default:
     logStream = fopen(logName.c_str(), "a");
     fprintf(logStream, "Received unknown message.\n");
     fclose(logStream);
-    sleep(1);
-    exit(1);
   }
 }
 
@@ -301,6 +329,12 @@ void *crawlQueue(void *payload){
 void init(){
     caughtSigInt = false;
     threadsActive = 0;
+    tags[0] = "id";
+    tags[1] = "pw";
+    tags[2] = "flag";
+    tags[3] = "file";
+    tags[4] = "segment";
+    tags[5] = "msg";
 }
 
 int main(int argc, char* argv[]) {
@@ -312,6 +346,7 @@ int main(int argc, char* argv[]) {
     std::string locLogName = "log.txt";
     std::string dir(argv[2]);
     std::string confName = "dfs.conf";
+    init();
 
     //Log file name
     logName = dir + "/" + locLogName;

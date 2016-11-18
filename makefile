@@ -5,8 +5,8 @@ EXE=main
 all: $(EXE)
 
 CFLG=-g
-LIBS=-pthread
-CLEAN=rm -f $(EXE) *.o *.a
+LIBS=-pthread -lcrypto
+CLEAN=rm -f dfs dfc *.o *.a
 
 # Compile
 .cpp.o:
@@ -15,6 +15,10 @@ CLEAN=rm -f $(EXE) *.o *.a
 main: dfs.o dfc.o
 	g++ -o dfs dfs.o  $(LIBS)
 	g++ -o dfc dfc.o  $(LIBS)
+
+dfc:
+	g++ -c $(CFLG) dfc.cpp  $(LIBS)
+	g++ -o dfc dfc.o $(LIBS)
 
 #  Clean
 clean:

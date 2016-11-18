@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <memory.h>
 #include <errno.h>
+#include <openssl/md5.h>
 
 //C++
 #include <iostream>
@@ -34,6 +35,15 @@
 std::vector<struct sockaddr_in*> remoteSocks;
 std::vector<int> clientFDvec;
 
+typedef struct Tuple{
+  int p1;
+  int p2;
+}Tuple;
+
+typedef struct ServerMap{
+   Tuple maps[4][4];
+}ServerMap;
+
 typedef struct Server {
   std::string homeDir;
   std::string addr;
@@ -53,6 +63,30 @@ typedef struct User{
 }User;
 
 User user;
+Tuple serverMaps[4][4];
+
+void initServerMaps(){
+  Tuple t1 = {0,1};
+  Tuple t2 = {1,2};
+  Tuple t3 = {2,3};
+  Tuple t4 = {3,0};
+  serverMaps[0][0] = t1;
+  serverMaps[0][1] = t2;
+  serverMaps[0][2] = t3;
+  serverMaps[0][3] = t4;
+  serverMaps[1][0] = t4;
+  serverMaps[1][1] = t1;
+  serverMaps[1][2] = t2;
+  serverMaps[1][3] = t3;
+  serverMaps[2][0] = t3;
+  serverMaps[2][1] = t4;
+  serverMaps[2][2] = t2;
+  serverMaps[2][3] = t1;
+  serverMaps[3][0] = t2;
+  serverMaps[3][1] = t3;
+  serverMaps[3][2] = t4;
+  serverMaps[3][3] = t1;
+}
 
 int parseConfig(char* conf){
   std::ifstream confFile;
@@ -107,12 +141,18 @@ int parseConfig(char* conf){
 }
 
 std::string buildMsg(std::string flag, std::string msg){
-  return user.id+" "+user.pw+"#"+flag+"#"+msg;
+  return "<id>"+user.id+"</id><pw>"+user.pw+"</pw><flag>"+flag+"</flag><msg>"+msg+"</msg>";
+}
+
+//For when msg is a file segment: flag must be "P"
+std::string buildMsg(std::string flag, std::string msg, std::string segment, int msgLen, std::string filename){
+  std::string msgTrunc = msg.substr(0, msgLen);
+  return "<id>"+user.id+"</id><pw>"+user.pw+"</pw><flag>"+flag+"</flag><file>"+filename+"</file><segment>"+segment+"</segment><msg>"+msgTrunc+"</msg>";
 }
 
 int testSend() {
     for(int i = 0; i < 4; i++) {
-        std::string tester = user.id+" "+user.pw+"#Testing";
+        std::string tester = buildMsg("A", "testing");
         std::cout<<tester<<std::endl;
         if((sendto(clientFDvec[i], tester.c_str(), tester.length(), 0, (struct sockaddr*)remoteSocks[i], sizeof(*(remoteSocks[i])))) < 0) {
             printf("Error in sendto on socket %d", i);
@@ -145,8 +185,95 @@ int doGet() {
     return 0;
 }
 
-int doPut() {
-    return 0;
+int doPut(std::string filename) {
+  std::cout<<"Put"<<std::endl;
+  FILE* file = fopen(filename.c_str(), "rb");
+  if(file == NULL){
+    std::cout<<"Cannot open file"<<filename<<", please check that it exists."<<std::endl;
+    return -1;
+  }
+  int fileSize;
+  int pieceSize; //last piece will be bigger by up to 3 bytes
+  int n1, n2, n3, n4, nFull;
+  char* buf1;
+  char* buf2;
+  char* buf3;
+  char* buf4;
+  std::string msgs[4];
+  unsigned char digest[32];
+  char* buf;
+  long long int md5hash;
+  int hash;
+
+  //Split file into four pieces
+  fseek(file, 0, SEEK_END);
+  fileSize = ftell(file);
+  rewind(file);
+  pieceSize = fileSize/4;
+  //Determine which servers to upload what to
+  //Construct message with appropriate flags
+  //Send messages to servers
+
+  buf1 = new char[pieceSize+1];
+  buf2 = new char[pieceSize+1];
+  buf3 = new char[pieceSize+1];
+  buf4 = new char[(fileSize - pieceSize*3)+1];
+  bzero(buf1, pieceSize+1);
+  bzero(buf2, pieceSize+1);
+  bzero(buf3, pieceSize+1);
+  bzero(buf4, (fileSize - pieceSize*3)+1);
+
+  if((n1 = fread(buf1, sizeof(char), pieceSize, file))<= 0) {
+    std::cout<<"Read error in doPut segment 1"<<std::endl;
+    return -1;
+  }
+  if((n2 = fread(buf2, sizeof(char), pieceSize, file))<= 0) {
+    std::cout<<"Read error in doPut segment 2"<<std::endl;
+    return -1;
+  }
+  if((n3 = fread(buf3, sizeof(char), pieceSize, file))<= 0) {
+    std::cout<<"Read error in doPut segment 3"<<std::endl;
+    return -1;
+  }
+  if((n4 = fread(buf4, sizeof(char), (fileSize - pieceSize*3), file))<= 0) {
+    std::cout<<"Read error in doPut segment 4"<<std::endl;
+    return -1;
+  }
+  buf = new char[fileSize+1];
+  bzero(buf, fileSize+1);
+  rewind(file);
+  if((nFull = fread(buf, sizeof(char), fileSize, file))<= 0) {
+    std::cout<<"Read error in doPut full file"<<std::endl;
+    return -1;
+  }
+
+  MD5((unsigned char*)buf, fileSize, digest);
+  const char* newDigest = (const char*)digest;
+  md5hash = strtoll(newDigest, NULL, 16);
+  hash = md5hash % 4;
+
+  std::string seg1(buf1);
+  std::string seg2(buf2);
+  std::string seg3(buf3);
+  std::string seg4(buf4);
+
+  msgs[0] = buildMsg("P", seg1, "1", pieceSize, filename);
+  msgs[1] = buildMsg("P", seg2, "2", pieceSize, filename);
+  msgs[2] = buildMsg("P", seg3, "3", pieceSize, filename);
+  msgs[3] = buildMsg("P", seg4, "4", fileSize - pieceSize*3, filename);
+
+  for(int i = 0; i < 4; i++) {
+    //pthread_mutex_lock(&client_sock_lock);
+    //serverMaps[hash][i] contains tuple that says which segments to send to server i
+    int firstSeg = serverMaps[hash][i].p1;
+    int secSeg = serverMaps[hash][i].p2;
+    int sent = send(clientFDvec[i], msgs[firstSeg].c_str(), msgs[firstSeg].length(), 0);
+    sent = send(clientFDvec[i], msgs[secSeg].c_str(), msgs[secSeg].length(), 0);
+    //pthread_mutex_unlock(&client_sock_lock);
+  }
+
+  fclose(file);
+  return 0;
 }
 
 //Pre-condition: User struct user is initialized
@@ -264,6 +391,7 @@ int main(int argc, char* argv[]){
       }
     }
 
+    initServerMaps();
     authenticate();
 
     while(1) {
@@ -295,7 +423,8 @@ int main(int argc, char* argv[]){
         } else if (command == "GET") {
             doGet();
         } else if(command == "PUT") {
-            doPut();
+            std::cout<<"File name is: "<<args[0]<<std::endl;
+            doPut(args[0]);
         } else if (command == "TEST") {
             std::cout<<"Test send"<<std::endl;
             testSend();
