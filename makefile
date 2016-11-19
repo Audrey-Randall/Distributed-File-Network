@@ -4,7 +4,7 @@ EXE=main
 # Main target
 all: $(EXE)
 
-CFLG=-g
+CFLG=-g -std=c++11
 LIBS=-pthread -lcrypto
 CLEAN=rm -f dfs dfc *.o *.a
 

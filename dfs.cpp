@@ -162,7 +162,7 @@ int handleSegment(std::string id, std::string msg, std::string filename, std::st
     }
     //mkdir(homeDir+"/"+id)
   }
-  std::string newName = dirName+"/."+filename+seg;
+  std::string newName = dirName+"/."+filename+"."+seg;
   file = fopen(newName.c_str(), "wb");
   if(file == NULL) {
     logStream = fopen(logName.c_str(), "a");
@@ -178,6 +178,16 @@ int handleSegment(std::string id, std::string msg, std::string filename, std::st
   fclose(file);
   pthread_mutex_unlock(&dir_lock);
   return 0;
+}
+
+std::string buildMsg(std::string flag, std::string msg){
+  return "<all><flag>"+flag+"</flag>\n<msg>"+msg+"</msg></all>\n";
+}
+
+//For when msg is complicated
+std::string buildMsg(std::string id, std::string pw, std::string flag, std::string msg, std::string segment, int msgLen, std::string filename){
+  std::string msgTrunc = msg.substr(0, msgLen);
+  return "<all><id>"+id+"</id>\n<pw>"+pw+"</pw>\n<flag>"+flag+"</flag>\n<file>"+filename+"</file>\n<segment>"+segment+"</segment>\n<msg>"+msgTrunc+"</msg></all>\n";
 }
 
 void respond(int client_fd, std::string msg) {
@@ -196,6 +206,116 @@ void respond(int client_fd, std::string msg) {
   }
 }
 
+
+int sendFile(int client_fd, std::string fullPath, int segNum) {
+    FILE* response;
+    struct sockaddr_in remoteSock;
+    int fileSize = 0;
+    int n;
+    int i;
+    string header_str;
+    bool foundIdx = false;
+
+    response = fopen(fullPath.c_str(), "rb");
+    if(response == NULL) {
+        logStream = fopen(logName.c_str(), "a");
+        fprintf(logStream, "Error opening file. Full path: %s\n", fullPath.c_str());
+        fclose(logStream);
+        return -1;
+    }
+
+    fseek(response, 0, SEEK_END);
+    fileSize = ftell(response);
+    rewind(response);
+
+    char buffer[fileSize];
+    bzero(buffer, fileSize);
+    if((n = fread(buffer, sizeof(char), fileSize, response)) == fileSize) {
+        string strBuf(buffer, n);
+        //std::string id, std::string pw, std::string flag, std::string msg, std::string segment, int msgLen, std::string filename
+        string payload = buildMsg("n", "n", "G", strBuf, to_string(segNum), strBuf.length(), fullPath);
+        logStream = fopen(logName.c_str(), "a");
+        fprintf(logStream, "\tReading file successful, calling send\n");
+        fclose(logStream);
+        pthread_mutex_lock(&client_sock_lock);
+        int sent = send(client_fd, payload.c_str(), payload.length(), 0);
+        pthread_mutex_unlock(&client_sock_lock);
+        if(sent != payload.length()) {
+          logStream = fopen(logName.c_str(), "a");
+          fprintf(logStream, "\tSending file unsuccessful!\n");
+          fclose(logStream);
+        } else {
+          logStream = fopen(logName.c_str(), "a");
+          fprintf(logStream, "\tSending file %s successful.\n", fullPath.c_str());
+          fclose(logStream);
+        }
+        bzero(buffer, sizeof(buffer));
+    } else {
+      logStream = fopen(logName.c_str(), "a");
+      fprintf(logStream, "Error reading file in sendFile. Full path: %s\n", fullPath.c_str());
+      fclose(logStream);
+    }
+    fclose(response);
+    return 0;
+}
+
+int handleGet(int client_fd, std::string id, std::string filename){
+  DIR *dir;
+  struct dirent *ent;
+  std::string dirName = homeDir+"/"+id;
+  pthread_mutex_lock(&dir_lock);
+  std::string findName = "."+filename+".";
+  std::string foundFiles[2];
+  int segs[2];
+  int filesFound = 0;
+  std::string resp;
+  FILE* f1;
+  FILE* f2;
+  if ((dir = opendir (dirName.c_str())) != NULL) {
+    /* print all the files and directories within directory*/
+
+    while ((ent = readdir (dir)) != NULL) {
+      //printf ("%s\n", ent->d_name);
+      std::string curFile(ent->d_name);
+      int found = curFile.find(findName);
+      logStream = fopen(logName.c_str(), "a");
+      fprintf(logStream, "\tReading file name %s\n", ent->d_name);
+      fclose(logStream);
+      //handle if found or not
+      if(found == std::string::npos) continue;
+      else {
+        foundFiles[filesFound] = curFile;
+        segs[filesFound] = atoi(curFile.substr(found+findName.length()).c_str());
+        logStream = fopen(logName.c_str(), "a");
+        fprintf(logStream, "\t\tAdding %s to foundFiles\n\t\tSegment is %d, seg string is %s\n", ent->d_name, segs[filesFound], curFile.substr(found).c_str());
+        fclose(logStream);
+        filesFound++;
+      }
+    }
+    closedir(dir);
+
+    if(filesFound < 2) {
+      resp = buildMsg("E", "File incomplete");
+      respond(client_fd, resp);
+    } else {
+      std::string fp1 = dirName+"/"+foundFiles[0];
+      std::string fp2 = dirName+"/"+foundFiles[1];
+      logStream = fopen(logName.c_str(), "a");
+      fprintf(logStream, "\tCalling sendFile\n");
+      fclose(logStream);
+      sendFile(client_fd, fp1, segs[0]);
+      sendFile(client_fd, fp2, segs[1]);
+    }
+  } else {
+    logStream = fopen(logName.c_str(), "a");
+    fprintf(logStream, "ERROR: Cannot open directory.\n");
+    fclose(logStream);
+  }
+  //open dir, read off files, see which ones contain substring "."+filename
+
+  pthread_mutex_unlock(&dir_lock);
+}
+
 //returns element enclosed within tag if it exists, "NOTFOUND" if it does not
 std::string searchXML(std::string tag, std::string msg){
   std::string s = "<"+tag+">";
@@ -208,8 +328,10 @@ std::string searchXML(std::string tag, std::string msg){
 
 void handle_msg(int client_fd, std::string full_msg){
   //Tags are id, pw, flag, file, segment, msg
+  if(full_msg == "boop") return;
   int seg;
   std::string tagVals[NUMTAGS];
+  std::string msg;
   for(int i = 0; i < NUMTAGS; i++) {
     tagVals[i] = searchXML(tags[i], full_msg);
     /*logStream = fopen(logName.c_str(), "a");
@@ -220,13 +342,16 @@ void handle_msg(int client_fd, std::string full_msg){
     logStream = fopen(logName.c_str(), "a");
     fprintf(logStream, "User authentication failed: Invalid username/password format\n");
     fclose(logStream);
-    respond(client_fd, "INVALID");
+    msg = buildMsg("A", "INVALID");
+    respond(client_fd, msg);
   }
   if(!authenticate(tagVals[0], tagVals[1])) {
-    respond(client_fd, "INVALID");
+    msg = buildMsg("A", "INVALID");
+    respond(client_fd, msg);
     return;
   }
-  respond(client_fd, "VALID");
+  msg = buildMsg("A", "VALID");
+  respond(client_fd, msg);
   char flag = tagVals[2][0];
 
 
@@ -237,6 +362,7 @@ void handle_msg(int client_fd, std::string full_msg){
     case 'L':
       break;
     case 'G':
+      handleGet(client_fd, tagVals[0], tagVals[3]);
       break;
     case 'P':
       seg = atoi(tagVals[4].c_str());
@@ -274,70 +400,6 @@ void catch_sigpipe(int s) {
   cout<<"Caught SIGPIPE"<<endl;
   sleep(10);
   exit(1);
-}
-
-int sendFile(int client_fd, string client_msg, string filepath) {
-    FILE* response;
-    struct sockaddr_in remoteSock;
-    int fileSize = 0;
-    int n;
-    int i;
-    int is404 = 0;
-    string header_str;
-    string ext;
-    string fullPath;
-    bool foundIdx = false;
-
-    //Error flags
-    int* errCode = new int;
-    *errCode = 200;
-    bool* invalidMethod = new bool;
-    *invalidMethod = false;
-    bool invalidURI;
-    bool* invalidVersion = new bool;
-    *invalidVersion = false;
-
-    //string filepath = ???
-
-    fullPath = homeDir + filepath;
-
-    int idx = filepath.find('.');
-    ext = filepath.substr(idx, filepath.length()-1);
-    ext = "/"+ext;
-    cout<<"ext is "<<endl;
-    response = fopen(fullPath.c_str(), "rb");
-    if(response == NULL) {
-        logStream = fopen(logName.c_str(), "a");
-        fprintf(logStream, "Error opening file. Full path: %s\n", fullPath.c_str());
-        fclose(logStream);
-
-    }
-
-    fseek(response, 0, SEEK_END);
-    fileSize = ftell(response);
-    rewind(response);
-
-    char buffer[fileSize];
-    bzero(buffer, fileSize);
-    while ((n = fread(buffer, sizeof(char), fileSize, response)) > 0) {
-        string strBuf(buffer, n);
-        string payload = header_str + strBuf;
-        cout<<"header str: "<<header_str.length()<<" buffer: "<<strBuf.length()<<" payload length: "<<payload.length()<<endl;
-        const char* charLoad = payload.c_str();
-        cout<<"File opened, header_str is "<<header_str<<endl;
-        if(ext== ".gif"||ext==".png"){
-            cout<<"buffer length: "<<sizeof(buffer)<<" and n = "<<n<<endl;
-            //int i;
-            //for(i = 0; i < n; i++) printf("%c", buffer[i]);
-        }
-        pthread_mutex_lock(&client_sock_lock);
-        int sent = send(client_fd, charLoad, payload.length(), 0);
-        pthread_mutex_unlock(&client_sock_lock);
-        bzero(buffer, sizeof(buffer));
-    }
-    if (n < 0) printf("Read error\n");
-    fclose(response);
-    return 0;
 }
 
 void *crawlQueue(void *payload){

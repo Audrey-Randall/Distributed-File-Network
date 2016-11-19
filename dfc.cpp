@@ -34,6 +34,8 @@
 */
 std::vector<struct sockaddr_in*> remoteSocks;
 std::vector<int> clientFDvec;
+#define NUMTAGS 6
+std::string tags[NUMTAGS];// = {"id","pw","flag", "file","segment", "msg"}
 
 typedef struct Tuple{
   int p1;
@@ -86,6 +88,16 @@ void initServerMaps(){
   serverMaps[3][1] = t3;
   serverMaps[3][2] = t4;
   serverMaps[3][3] = t1;
+}
+
+//returns element enclosed within tag if it exists, "NOTFOUND" if it does not
+std::string searchXML(std::string tag, std::string msg){
+  std::string s = "<"+tag+">";
+  std::string e = "</"+tag+">";
+  int start = msg.find(s);
+  int end = msg.find(e);
+  if(start == std::string::npos || end == std::string::npos) return "NOTFOUND";
+  else return msg.substr(start+s.length(), end - (start + s.length()));
 }
 
 int parseConfig(char* conf){
@@ -141,13 +153,13 @@ int parseConfig(char* conf){
 }
 
 std::string buildMsg(std::string flag, std::string msg){
-  return "<id>"+user.id+"</id><pw>"+user.pw+"</pw><flag>"+flag+"</flag><msg>"+msg+"</msg>";
+  return "<all><id>"+user.id+"</id><pw>"+user.pw+"</pw><flag>"+flag+"</flag><msg>"+msg+"</msg></all>";
 }
 
 //For when msg is a file segment: flag must be "P"
 std::string buildMsg(std::string flag, std::string msg, std::string segment, int msgLen, std::string filename){
   std::string msgTrunc = msg.substr(0, msgLen);
-  return "<id>"+user.id+"</id><pw>"+user.pw+"</pw><flag>"+flag+"</flag><file>"+filename+"</file><segment>"+segment+"</segment><msg>"+msgTrunc+"</msg>";
+  return "<all><id>"+user.id+"</id><pw>"+user.pw+"</pw><flag>"+flag+"</flag><file>"+filename+"</file><segment>"+segment+"</segment><msg>"+msgTrunc+"</msg></all>";
 }
 
 int testSend() {
@@ -176,20 +188,128 @@ int doList() {
       while((recSize = recvfrom(clientFDvec[i], buffer, 1024, 0, (struct sockaddr*)remoteSocks[i], (socklen_t*)&sockLen)) > 0) {
         std::cout<<"Buffer is: "<<buffer<<std::endl;
       }
-      if(recSize < 0) perror("Recvfrom error"); //will be 0 if no error
+      if(recSize < 0) perror("Recvfrom error"); //recSize will be 0 if no error
   }
   return 0;
 }
 
-int doGet() {
-    return 0;
+std::string findCorrectMsg(std::string fullMsg) {
+  std::vector<std::string> msgs;
+  int cont;
+  while((cont = fullMsg.find("</all>")) != std::string::npos) {
+    std::string msg = searchXML("all", fullMsg);
+    msgs.push_back(msg);
+    fullMsg = fullMsg.substr(cont+6);
+  }
+  //Message doesn't contain any flags
+  if(msgs.size() == 0) {
+    std::cout<<"ERROR: Server sent malformed response to GET request, cannot reconstruct file."<<std::endl;
+    return "NOTFOUND";
+  }
+  for(int i = 0; i < msgs.size(); i++){
+    //Look for the message within a message that's a response to GET.
+    std::string response = msgs[i];
+    std::string flag = searchXML("flag", response);
+    //Found it!
+    if(flag == "G") {
+
+      std::cout<<"\t\tFound it!Seg is "<<searchXML("segment",msgs[i])<<" and msg is: "<<searchXML("msg", msgs[i])<<std::endl;
+      return msgs[i];
+      continue;
+    } else {
+      //Message doesn't contain any flag tags
+      if(flag == "NOTFOUND") {
+        //std::cout<<"\t\tERROR: Server sent malformed response."<<std::endl;
+        continue;
+      }
+      //Message is an error in response to GET
+      if(flag == "E") {
+        std::cout<<"\t\tServer sent error: "<<std::endl;
+        return msgs[i];
+      }
+      //std::cout<<"\t\tDiscarding message with incorrect flag: "<<searchXML("msg",msgs[i])<<std::endl;
+    }
+  }
+  return "NOTFOUND";
+}
+
+int doGet(std::string filename) {
+  std::string pieces[4];
+  std::string names[4];
+  std::string response = "";
+  unsigned int sockLen = sizeof(remoteSocks[0]);
+  FILE* local;
+  for(int i = 0; i < 4; i++){
+    names[i] = "."+filename+"."+std::to_string(i+1);
+    pieces[i] = "empty";
+  }
+  //Iterate over pieces
+  for(int i = 0; i < 4; i++) {
+    std::cout<<"\tSending and receiving to and from server "<<i<<std::endl;
+    //std::string flag, std::string msg, std::string segment, int msgLen, std::string filename
+    std::string msg = buildMsg("G", "none", "-1", 4, filename);
+    char buffer[1024];
+    int recSize;
+    std::string tagVals[NUMTAGS];
+
+    if((send(clientFDvec[i], msg.c_str(), msg.length(), 0)) < 0) {
+        printf("Error in sendto in doGet");
+        perror("");
+    }
+    bool gotResp = false;
+    std::string getResp;
+    for(int j = 0; j < 2; j++){
+    while(!gotResp){
+      //Get the full message in the socket, which might be many messages concatenated together.
+      response = "";
+      do {
+        recSize = recvfrom(clientFDvec[i], buffer, 1024, 0, (struct sockaddr*)remoteSocks[i], (socklen_t*)&sockLen);
+        std::string curResp(buffer);
+        response = response + curResp;
+      }while(recSize == 1024);
+      //std::cout<<"\t\tFull message is: "<<response<<std::endl;
+      getResp = findCorrectMsg(response);
+      if(getResp != "NOTFOUND") {
+        gotResp = true;
+        if((send(clientFDvec[i], "boop", 4, 0)) < 0) {
+            printf("Error in sendto in doGet on boop");
+            perror("");
+        }
+      }
+      std::cout<<"\tLooping through calling recv until a GET response from "<<i<<" arrives"<<std::endl;
+    }
+
+    //Tags are id, pw, flag, file, segment, msg
+    int segIdx;
+    for(int i = 0; i < NUMTAGS; i++) {
+      tagVals[i] = searchXML(tags[i], getResp);
+    }
+    segIdx = atoi(tagVals[4].c_str())-1;
+    if(pieces[segIdx] == "empty") {
+      pieces[segIdx] = tagVals[5];
+    }
+  }
+}
+  //Check that all pieces were found
+  for(int i = 0; i < 4; i++) {
+    if(pieces[i] == "empty") {
+      std::cout<<"Cannot reconstruct file: segment "<<i+1<<" missing."<<std::endl;
+      return -1;
+    }
+  }
+  std::string fullMsg = pieces[0]+pieces[1]+pieces[2]+pieces[3]+ "Blahh";
+  local = fopen(filename.c_str(), "wb");
+  if(fwrite(fullMsg.c_str(), sizeof(char), fullMsg.length(), local) != fullMsg.length()) {
+    std::cout<<"ERROR: fwrite in doGet()"<<std::endl;
+  }
+  return 0;
 }
 
 int doPut(std::string filename) {
   std::cout<<"Put"<<std::endl;
   FILE* file = fopen(filename.c_str(), "rb");
   if(file == NULL){
-    std::cout<<"Cannot open file"<<filename<<", please check that it exists."<<std::endl;
+    std::cout<<"Cannot open file "<<filename<<", please check that it exists."<<std::endl;
     return -1;
   }
   int fileSize;
@@ -292,8 +412,9 @@ int authenticate() {
       do {
         recSize = recvfrom(clientFDvec[i], buffer, 1024, 0, (struct sockaddr*)remoteSocks[i], (socklen_t*)&sockLen);
         std::string response(buffer);
-        if(response != "VALID") {
-          std::cout<<"Fatal error: User credentials are not valid on server #"<<i+1<<std::endl;
+        std::string msg = searchXML("msg", response);
+        if(msg != "VALID") {
+          std::cout<<"Fatal error: User credentials are not valid on server #"<<i+1<<" msg is "<<response<<std::endl;
           exit(1);
         }
         else std::cout<<"Credentials accepted by server #"<<i+1<<std::endl;
@@ -323,6 +444,12 @@ int main(int argc, char* argv[]){
 
     //Initialize everything
     memset(buffer, 0, sizeof(buffer));
+    tags[0] = "id";
+    tags[1] = "pw";
+    tags[2] = "flag";
+    tags[3] = "file";
+    tags[4] = "segment";
+    tags[5] = "msg";
 
     //Parse config file
     parseConfig(argv[1]);
@@ -421,7 +548,7 @@ int main(int argc, char* argv[]){
         if(command == "LIST") {
             doList();
         } else if (command == "GET") {
-            doGet();
+            doGet(args[0]);
         } else if(command == "PUT") {
             std::cout<<"File name is: "<<args[0]<<std::endl;
             doPut(args[0]);
